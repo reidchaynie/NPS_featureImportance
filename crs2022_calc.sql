@@ -1,3 +1,7 @@
+-- first_purchase_products_2022 is finding first orders for every purchasing household that made its first purchase during first 8 months of 2022
+-- removes all orders with multiple products so that we can attribute retention to a single product 
+-- removes all products that are not currently available 
+
 with first_purchase_products_2022 as (
 select 
   order_id 
@@ -15,7 +19,8 @@ where
   and year(order_placed) = 2022
   and month(order_placed) < 9
   and product_id not in (26945, 24586) -- removes gift card purchases, which is a tremendous outlier that skews the data 
-  and product_id in (select id from PROD_MART_GOLDBELLY_DB.ANALYTICS_MART.products where is_featured and is_Available) -- narrows to currently active products  
+  and product_id in 
+    (select id from PROD_MART_GOLDBELLY_DB.ANALYTICS_MART.products where is_featured and is_Available) -- narrows to currently active products  
   and not IS_SUBSCRIPTION_OG and not IS_SUBSCRIPTION_FULFILLMENT
   and not IS_CORP_ORDER
 and not IS_CANCELED 
@@ -23,6 +28,8 @@ group by 1,4,6
 having 
   product_id_ not like '%,%' --removes orders containing multiple products
 ),
+-- second CTE gets counts of first-time purchasers for each product in the first CTE range 
+-- removes all products that dont have at least 200 first-time purchasers 
 counts_of_first_Purchase_by_product_2022 as (
   select 
     product_name_ 
@@ -33,6 +40,8 @@ counts_of_first_Purchase_by_product_2022 as (
   group by 1,2
   having num_first_Time_purchase >= 200 -- this removes products beneath a min volume threshold. If an order has 80% retention on 5 orders, who cares
 ),
+-- this CTE is getting the max number of first-time purchasers of any product so that we can scale products against it 
+-- using the join_on_me field to join this total to every product 
 first_time_factor as (
   select 
         1 as join_on_me
@@ -41,6 +50,8 @@ first_time_factor as (
     counts_of_first_Purchase_by_product_2022
   group by 1 
 ),
+-- this CTE is taking max_purchases and dividing it by the count of first_time_purchasers for each product
+-- this is scaling the products against each other by their number of first-time purchasers 
 volume_Factor_calc_2022 as (
   select 
       product_name_
@@ -52,6 +63,8 @@ volume_Factor_calc_2022 as (
   left join 
     first_time_factor on counts_of_first_Purchase_by_product_2022.join_on_me = first_Time_factor.join_on_me
 ),
+-- next cte pulls every order for all customers identified in the first CTE
+-- this cte adopts all constraints from the first CTE, so it only needs the single where condition
 follow_up_counts_setup as (
   select 
     purchasing_household_id 
@@ -64,7 +77,7 @@ follow_up_counts_setup as (
       (select PURCHASING_HOUSEHOLD_ID from first_purchase_products_2022)
   group by 1,2
 ),
--- here we only want to count a purchase if it came in within 6 months of the first purchase 
+-- next cte is calculating the end range for each phh (8 months after their first purchase) 
 -- this is so we can compare records from 2022 apples:apples with records in 2023 
 order_range as (
   select 
@@ -75,6 +88,7 @@ order_range as (
     follow_up_counts_setup
   group by 1 
 ),
+-- this CTE sees which phh are one_and_done and which are retained 
 follow_up_counts as (
   select 
     follow_up_counts_setup.PURCHASING_HOUSEHOLD_ID 
@@ -88,6 +102,7 @@ follow_up_counts as (
     order_placed <= end_of_range -- limits to first 6 months 
   group by 1
   ),
+-- counts the number of retained customers for every product
 retention_counts as (
   select 
     product_name_
@@ -118,7 +133,8 @@ select
 
 from 
   retention_counts 
-left join volume_Factor_calc_2022 on retention_counts.product_name_ = volume_Factor_calc_2022.product_name_)
+left join volume_Factor_calc_2022 on retention_counts.product_name_ = volume_Factor_calc_2022.product_name_
+)
 ,
 -- here we are calculating max retention rate, just like we calculated max purchase volume. 
 -- This is so we can scale products against eachother based on retention
@@ -144,7 +160,7 @@ from
 
 
 -- output
--- score calc 
+-- final score calc 
 select 
   product_id_
   ,product_name_  
